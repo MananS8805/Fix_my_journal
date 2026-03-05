@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Flutter/Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+build/
+*.spec
+
+# Document Sandbox (Important for this hackathon)
+temp_*/
+outputs/
+*.pdf
+*.docx
