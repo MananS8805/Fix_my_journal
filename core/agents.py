@@ -1,22 +1,21 @@
-import google.generativeai as genai
-import requests
-from bs4 import BeautifulSoup
+import os
 import json
 import re
+import requests
+from bs4 import BeautifulSoup
+from groq import Groq
 from typing import Optional, List, Dict
+import collections
 
 
 class StyleAgent:
     """
     Agent responsible for extracting journal formatting rules
-    from a webpage using Gemini LLM.
+    from a webpage using Groq LLM.
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        if api_key:
-            genai.configure(api_key=api_key)
-
-        self.model = genai.GenerativeModel("gemini-1.5-flash")
+        self.client = Groq(api_key=api_key or os.getenv("GROQ_API_KEY"))
 
     def _fetch_page_content(self, url: str) -> str:
         """
@@ -47,12 +46,11 @@ class StyleAgent:
         try:
             page_text = self._fetch_page_content(url)
 
-            prompt = f"""
-You are an academic formatting expert.
+            prompt = f"""You are an academic formatting expert.
 
 Extract manuscript formatting guidelines from the text below.
 
-Return ONLY valid JSON with this structure:
+Return ONLY valid JSON with this exact structure, no explanation, no markdown, no backticks:
 
 {{
   "citation_style": "",
@@ -67,15 +65,19 @@ Return ONLY valid JSON with this structure:
 }}
 
 TEXT:
-{page_text[:12000]}
-"""
+{page_text[:12000]}"""
 
-            response = self.model.generate_content(prompt)
+            response = self.client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                temperature=0.1,
+            )
 
             try:
-                rules = json.loads(response.text)
+                rules = json.loads(response.choices[0].message.content)
             except Exception:
-                rules = {"raw_output": response.text}
+                rules = {"raw_output": response.choices[0].message.content}
 
             return {
                 "source": url,
@@ -95,6 +97,7 @@ TEXT:
 class CitationAgent:
     """
     Agent responsible for validating citations against a reference list.
+    Uses pure Python regex — no AI needed.
     """
 
     def __init__(self):
@@ -107,7 +110,7 @@ class CitationAgent:
         """
         cite_pattern = re.compile(r"\[@([^\]]+)\]")
         matches = cite_pattern.findall(body)
-        
+
         all_keys = set()
         for match in matches:
             keys = [key.strip().lstrip('@') for key in match.split(';')]
@@ -128,7 +131,7 @@ class CitationAgent:
         Returns:
             A dictionary containing the validation results.
         """
-        
+
         cited_keys = self._extract_citekeys(body)
         reference_ids = {ref.get("id") for ref in references if ref.get("id")}
 
@@ -137,7 +140,9 @@ class CitationAgent:
 
         # Basic duplicate check based on ID
         all_ref_ids = [ref.get("id") for ref in references if ref.get("id")]
-        duplicates = [item for item, count in __import__("collections").Counter(all_ref_ids).items() if count > 1]
+        duplicates = [
+            item for item, count in collections.Counter(all_ref_ids).items() if count > 1
+        ]
 
         is_valid = not missing_references and not duplicates
 
@@ -146,24 +151,33 @@ class CitationAgent:
             suggestions.append({
                 "issue": "Missing Reference",
                 "citation": key,
-                "suggestion": f"The citation '[@{key}]' is present in the text, but no corresponding entry was found in the reference list. Please add a reference with the ID '{key}'."
+                "suggestion": (
+                    f"The citation '[@{key}]' is present in the text, but no corresponding "
+                    f"entry was found in the reference list. Please add a reference with the ID '{key}'."
+                )
             })
 
         for ref_id in unused_references:
             suggestions.append({
                 "issue": "Unused Reference",
                 "citation": ref_id,
-                "suggestion": f"The reference with ID '{ref_id}' is in the reference list but does not appear to be cited in the text. Consider removing it or adding a citation '[@{ref_id}]'."
+                "suggestion": (
+                    f"The reference with ID '{ref_id}' is in the reference list but does not "
+                    f"appear to be cited in the text. Consider removing it or adding a citation '[@{ref_id}]'."
+                )
             })
-            
+
         for dup_id in duplicates:
             suggestions.append({
                 "issue": "Duplicate Reference ID",
                 "citation": dup_id,
-                "suggestion": f"The reference ID '{dup_id}' is used for multiple entries in the reference list. Reference IDs must be unique."
+                "suggestion": (
+                    f"The reference ID '{dup_id}' is used for multiple entries in the reference list. "
+                    f"Reference IDs must be unique."
+                )
             })
 
-        validation = {
+        return {
             "total_citations_in_text": len(cited_keys),
             "total_references_in_list": len(reference_ids),
             "missing_references": missing_references,
@@ -172,5 +186,3 @@ class CitationAgent:
             "valid": is_valid,
             "suggestions": suggestions
         }
-
-        return validation

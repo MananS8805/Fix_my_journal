@@ -25,14 +25,13 @@ EXPORTS_DIR = REPO_ROOT / "exports"
 EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-
 # ── Imports ───────────────────────────────────────────────────────────────────
 from core.parser import ManuscriptParser
 from core.discovery import get_journal_rules
-from core.export import ManuscriptExporter
-from core.transformer import markdown_to_docx
+from core.export import ManuscriptExporter, markdown_to_docx
 from core.validator import validate_transformation
 from core.formatter import render_citations_with_csl
+
 import importlib.util as _ilu2
 _jp_spec = _ilu2.spec_from_file_location(
     "journal_profiles",
@@ -40,26 +39,26 @@ _jp_spec = _ilu2.spec_from_file_location(
 )
 _jp_mod = _ilu2.module_from_spec(_jp_spec)
 _jp_spec.loader.exec_module(_jp_mod)
-get_journal_list = _jp_mod.get_journal_list
-get_journal_profile = _jp_mod.get_journal_profile   
-import importlib.util as _ilu
+get_journal_list    = _jp_mod.get_journal_list
+get_journal_profile = _jp_mod.get_journal_profile
 
+import importlib.util as _ilu
 _helpers_spec = _ilu.spec_from_file_location(
     "helpers",
     Path(__file__).parents[1] / "utils" / "helpers.py"
 )
 _helpers_mod = _ilu.module_from_spec(_helpers_spec)
 _helpers_spec.loader.exec_module(_helpers_mod)
-identify_section_headers = _helpers_mod.identify_section_headers
+identify_section_headers   = _helpers_mod.identify_section_headers
 calculate_compliance_score = _helpers_mod.calculate_compliance_score
-extract_in_text_citations = _helpers_mod.extract_in_text_citations
+extract_in_text_citations  = _helpers_mod.extract_in_text_citations
 
-import importlib.util
-_spec = importlib.util.spec_from_file_location(
+import importlib.util as _ilu3
+_spec = _ilu3.spec_from_file_location(
     "templates",
     Path(__file__).parent / "utils" / "templates.py"
 )
-_mod = importlib.util.module_from_spec(_spec)
+_mod = _ilu3.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)
 get_template_path = _mod.get_template_path
 
@@ -93,10 +92,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── DEBUG (temporary) ─────────────────────────────────────────────────────────
+
+# ── DEBUG ─────────────────────────────────────────────────────────────────────
 @app.get("/debug")
 async def debug():
-    import sys
     try:
         from core.journal_profiles import get_journal_list, get_journal_profile
         jlist = get_journal_list()
@@ -104,8 +103,9 @@ async def debug():
     except Exception as e:
         return {"sys_path": sys.path, "error": str(e)}
 
-exporter      = ManuscriptExporter()
-_style_agent  = None
+
+exporter        = ManuscriptExporter()
+_style_agent    = None
 _citation_agent = None
 
 
@@ -143,21 +143,27 @@ def _build_markdown(manuscript: Dict[str, Any], references_text: str) -> str:
     return md
 
 
+def _load_compliance_checker():
+    """Load compliance.py from core/ using direct file path."""
+    import importlib.util as _ilu4
+    _cp_spec = _ilu4.spec_from_file_location(
+        "compliance",
+        Path(__file__).parents[1] / "core" / "compliance.py"
+    )
+    _cp_mod = _ilu4.module_from_spec(_cp_spec)
+    _cp_spec.loader.exec_module(_cp_mod)
+    return _cp_mod.check_compliance
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # /parse
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.post("/parse")
 async def parse_manuscript(file: UploadFile = File(...)):
-    """
-    Parse an uploaded PDF or DOCX manuscript and extract structured content.
-
-    Returns:
-        JSON with keys: metadata, abstract, body, references,
-        section_headers, in_text_citations, compliance_score
-    """
+    """Parse an uploaded PDF or DOCX manuscript and extract structured content."""
     try:
-        print(f"GOOGLE_API_KEY set: {bool(os.getenv('GOOGLE_API_KEY'))}")
+        print(f"GROQ_API_KEY set: {bool(os.getenv('GROQ_API_KEY'))}")
 
         with tempfile.NamedTemporaryFile(
             delete=False, suffix=Path(file.filename).suffix
@@ -170,7 +176,11 @@ async def parse_manuscript(file: UploadFile = File(...)):
         parsed_data = parser.parse(tmp_path)
         os.unlink(tmp_path)
 
-        # Guard: Gemini parse can return {"error": "..."} on failure
+        if not isinstance(parsed_data, dict):
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "Parser returned unexpected format."},
+            )
         if "error" in parsed_data:
             return JSONResponse(
                 status_code=400,
@@ -189,13 +199,13 @@ async def parse_manuscript(file: UploadFile = File(...)):
         return JSONResponse({
             "success": True,
             "data": {
-                "metadata":         parsed_data.get("metadata", {}),
-                "abstract":         parsed_data.get("abstract", ""),
-                "body":             parsed_data.get("body", ""),
-                "references":       parsed_data.get("references", ""),
-                "section_headers":  section_headers,
+                "metadata":          parsed_data.get("metadata", {}),
+                "abstract":          parsed_data.get("abstract", ""),
+                "body":              parsed_data.get("body", ""),
+                "references":        parsed_data.get("references", ""),
+                "section_headers":   section_headers,
                 "in_text_citations": citations,
-                "compliance_score": compliance,
+                "compliance_score":  compliance,
             },
         })
 
@@ -217,11 +227,7 @@ async def transform_manuscript(
 ):
     """
     Full pipeline: upload → parse → discover rules → validate citations
-    → render CSL → transform to DOCX → sanity-check → return download URL.
-
-    Accepts either:
-    - multipart file upload (PDF / DOCX), or
-    - JSON body with a 'manuscript' key.
+    → render CSL → transform to DOCX → compliance check → sanity-check → download URL.
     """
     correction_log      = []
     citation_validation = {}
@@ -238,15 +244,21 @@ async def transform_manuscript(
 
             parser     = ManuscriptParser()
             manuscript = parser.parse(tmp_path)
+            print("TABLES FOUND:", len(manuscript.get("tables", [])))
+            print("FIRST TABLE:", manuscript.get("tables", [{}])[0] if manuscript.get("tables") else "NONE")
             os.unlink(tmp_path)
 
-            # Guard: parser returns {"error": "..."} on Gemini failure
+            if not isinstance(manuscript, dict):
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "error": "Parser returned unexpected format."},
+                )
             if "error" in manuscript:
                 return JSONResponse(
                     status_code=400,
                     content={"success": False, "error": manuscript["error"]},
                 )
-            correction_log.append("Parsed manuscript file into structured JSON via Gemini.")
+            correction_log.append("Parsed manuscript file into structured JSON via Groq.")
         else:
             body_json = await request.json()
             if isinstance(body_json, dict) and "manuscript" in body_json:
@@ -264,17 +276,23 @@ async def transform_manuscript(
 
         # ── Step 2: journal profile + rule discovery ───────────────────────
         profile   = get_journal_profile(journal) or {}
-        rules     = await get_journal_rules(journal, style_url=style_url)
-        csl_style = rules.get("csl_style", "apa")
+        csl_style = profile.get("csl_style", "apa")
+
+        try:
+            rules = await get_journal_rules(journal, style_url=style_url)
+            if not isinstance(rules, dict):
+                rules = {}
+        except Exception:
+            rules = {}
 
         correction_log.append(f"Journal profile loaded: {profile.get('name', journal)}.")
         correction_log.append(f"CSL style: {csl_style}.")
-        if rules.get("font"):
-            correction_log.append(f"Target font: {rules['font']}.")
-        if rules.get("spacing"):
-            correction_log.append(f"Target spacing: {rules['spacing']}.")
-        if rules.get("margins"):
-            correction_log.append(f"Target margins: {rules['margins']}.")
+        if profile.get("font"):
+            correction_log.append(f"Target font: {profile['font']} {profile.get('font_size')}pt.")
+        if profile.get("margins"):
+            correction_log.append(f"Target margins: {profile['margins']}.")
+        if profile.get("columns"):
+            correction_log.append(f"Columns: {profile['columns']}.")
 
         # ── Step 3: citation validation ────────────────────────────────────
         body       = manuscript.get("body", "")
@@ -310,7 +328,6 @@ async def transform_manuscript(
                 f"CSL engine failed: {csl_err}. Original citations preserved."
             )
 
-        # Fallback bibliography text if citeproc produced nothing
         if not bibliography_text:
             raw_refs = manuscript.get("references", "")
             if isinstance(raw_refs, str) and raw_refs.strip():
@@ -327,26 +344,35 @@ async def transform_manuscript(
             bibliography_text,
         )
 
-        template_path = Path(template) if template else get_template_path(journal)
-
         filename    = (
             f"{journal.lower()}_transformed_"
             f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
         )
         output_path = EXPORTS_DIR / filename
 
-        # KEY FIX: pass the journal profile so the fallback renderer uses
-        # the correct font, size, spacing and margins for this journal.
         markdown_to_docx(
-            markdown_text  = final_markdown,
-            output_path    = output_path,
-            reference_doc  = template_path,
-            use_citeproc   = True,
-            journal_profile = profile,
+            markdown_text = final_markdown,
+            output_path   = str(output_path),
+            journal       = journal,
+            profile       = profile,
+            tables        = manuscript.get("tables", []),
         )
-        correction_log.append("Generated DOCX (Pandoc or python-docx fallback).")
+        correction_log.append("Generated DOCX using journal profile styling.")
 
-        # ── Step 6: sanity-check ───────────────────────────────────────────
+        # ── Step 6: compliance check ───────────────────────────────────────
+        compliance_report = {}
+        try:
+            check_compliance  = _load_compliance_checker()
+            compliance_report = check_compliance(manuscript, journal)
+            correction_log.append(
+                f"Compliance check: {compliance_report.get('passed_checks', 0)}/"
+                f"{compliance_report.get('total_checks', 0)} checks passed "
+                f"(score: {compliance_report.get('score', 0)}%)."
+            )
+        except Exception as ce:
+            correction_log.append(f"Compliance check failed: {ce}")
+
+        # ── Step 7: sanity-check ───────────────────────────────────────────
         transformation_validation = validate_transformation(
             original_markdown = final_markdown,
             docx_path         = str(output_path),
@@ -363,10 +389,13 @@ async def transform_manuscript(
                 "discovered_rules":          rules,
                 "citation_validation":       citation_validation,
                 "transformation_validation": transformation_validation,
+                "compliance":                compliance_report,
             },
         })
 
     except Exception as exc:
+        import traceback
+        print("TRANSFORM ERROR:", traceback.format_exc())
         return JSONResponse(
             status_code=400,
             content={"success": False, "error": str(exc)},
@@ -414,13 +443,13 @@ async def get_journals():
             p = get_journal_profile(jid)
             if p:
                 journals.append({
-                    "id":                jid,
-                    "name":              p.get("name", jid.title()),
+                    "id":                 jid,
+                    "name":               p.get("name", jid.title()),
                     "abstract_max_words": p.get("abstract_max_words", 150),
-                    "citation_style":    p.get("reference_style", "alphabetical"),
-                    "font":              p.get("font", "Times New Roman"),
-                    "font_size":         p.get("font_size", 12),
-                    "line_spacing":      p.get("line_spacing", 1.5),
+                    "citation_style":     p.get("reference_style", "alphabetical"),
+                    "font":               p.get("font", "Times New Roman"),
+                    "font_size":          p.get("font_size", 12),
+                    "line_spacing":       p.get("line_spacing", 1.5),
                 })
         return JSONResponse({
             "success": True,
@@ -430,6 +459,7 @@ async def get_journals():
         import traceback
         print("EXCEPTION:", traceback.format_exc())
         return JSONResponse(status_code=400, content={"success": False, "error": str(exc)})
+
 
 @app.get("/journals/{journal_name}")
 async def get_journal_details(journal_name: str):

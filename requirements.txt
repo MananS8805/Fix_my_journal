@@ -1,9 +1,9 @@
 fastapi
 uvicorn
 python-multipart
-docling
 python-docx
-google-generativeai
+groq
+pymupdf
 pydantic-settings
 requests
 beautifulsoup4

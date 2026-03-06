@@ -13,8 +13,9 @@ import {
   Paper,
   Alert,
   Divider,
+  LinearProgress,
 } from '@mui/material';
-import { ExpandMore, Download, Info, CheckCircle, Cancel } from '@mui/icons-material';
+import { ExpandMore, Download, Info, CheckCircle, Cancel, Warning } from '@mui/icons-material';
 
 const FormattingResults = ({ results, selectedJournal, uploadedFile }) => {
   if (!results) {
@@ -31,26 +32,26 @@ const FormattingResults = ({ results, selectedJournal, uploadedFile }) => {
     ? `${apiBaseUrl}/export-file/${journalId}/${encodeURIComponent(fileName)}`
     : null;
 
-  // changelog can be an array of change objects (from ChangeLog) or absent
   const changes = Array.isArray(results.changelog) ? results.changelog : [];
-
-  // correction_log is a string array
   const correctionLog = Array.isArray(results.correction_log) ? results.correction_log : [];
-
-  // discovered_rules from the discovery agent
   const discoveredRules = results.discovered_rules || null;
-
-  // citation_validation
   const citationValidation = results.citation_validation || null;
-
-  // transformation_validation
   const transformValidation = results.transformation_validation || null;
+  const compliance = results.compliance || null;
 
   const severityColor = (severity) => {
     const value = (severity || '').toLowerCase();
     if (value === 'critical' || value === 'high' || value === 'error') return 'error';
     if (value === 'warning' || value === 'medium') return 'warning';
     return 'info';
+  };
+
+  const complianceSeverityColor = (severity) => {
+    if (severity === 'high') return 'error';
+    if (severity === 'medium') return 'warning';
+    if (severity === 'low') return 'warning';
+    if (severity === 'info') return 'info';
+    return 'warning';
   };
 
   const handleDownload = async () => {
@@ -128,6 +129,101 @@ const FormattingResults = ({ results, selectedJournal, uploadedFile }) => {
           )}
         </CardContent>
       </Card>
+
+      {/* ── Compliance Report ─────────────────────────────── */}
+      {compliance && !compliance.error && (
+        <Card sx={{ mb: 3, border: '1px solid', borderColor: compliance.score >= 80 ? 'success.light' : compliance.score >= 50 ? 'warning.light' : 'error.light' }}>
+          <CardContent>
+            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+              <Typography variant="h6">
+                Compliance Report — {compliance.journal}
+              </Typography>
+              <Chip
+                label={`Score: ${compliance.score}%`}
+                color={compliance.score >= 80 ? 'success' : compliance.score >= 50 ? 'warning' : 'error'}
+                size="medium"
+                sx={{ fontWeight: 'bold', fontSize: '0.9rem' }}
+              />
+            </Box>
+
+            {/* Score bar */}
+            <Box sx={{ mb: 2 }}>
+              <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.5 }}>
+                <Typography variant="caption" color="text.secondary">
+                  {compliance.passed_checks} of {compliance.total_checks} checks passed
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {compliance.score}%
+                </Typography>
+              </Box>
+              <LinearProgress
+                variant="determinate"
+                value={compliance.score}
+                color={compliance.score >= 80 ? 'success' : compliance.score >= 50 ? 'warning' : 'error'}
+                sx={{ height: 8, borderRadius: 4 }}
+              />
+            </Box>
+
+            {/* Warnings — things to fix */}
+            {(compliance.warnings || []).filter(w => w.severity !== 'info').length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+                  ⚠️ Action Required
+                </Typography>
+                {compliance.warnings
+                  .filter(w => w.severity !== 'info')
+                  .map((w, i) => (
+                    <Alert
+                      key={i}
+                      severity={complianceSeverityColor(w.severity)}
+                      sx={{ mb: 1 }}
+                      icon={<Warning fontSize="small" />}
+                    >
+                      <strong>{w.check}:</strong> {w.message}
+                    </Alert>
+                  ))}
+              </Box>
+            )}
+
+            {/* Info notices — auto-applied formatting */}
+            {(compliance.warnings || []).filter(w => w.severity === 'info').length > 0 && (
+              <Box sx={{ mb: 2 }}>
+                <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 1 }}>
+                  ℹ️ Applied Automatically
+                </Typography>
+                {compliance.warnings
+                  .filter(w => w.severity === 'info')
+                  .map((w, i) => (
+                    <Alert key={i} severity="info" sx={{ mb: 1 }}>
+                      <strong>{w.check}:</strong> {w.message}
+                    </Alert>
+                  ))}
+              </Box>
+            )}
+
+            {/* Passes — what's correct */}
+            {(compliance.passes || []).length > 0 && (
+              <Accordion sx={{ mt: 1 }}>
+                <AccordionSummary expandIcon={<ExpandMore />}>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <CheckCircle color="success" fontSize="small" />
+                    <Typography variant="subtitle2">
+                      {compliance.passes.length} checks passed — click to expand
+                    </Typography>
+                  </Box>
+                </AccordionSummary>
+                <AccordionDetails>
+                  {compliance.passes.map((p, i) => (
+                    <Alert key={i} severity="success" sx={{ mb: 1 }}>
+                      <strong>{p.check}:</strong> {p.message}
+                    </Alert>
+                  ))}
+                </AccordionDetails>
+              </Accordion>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* ── Processing Log ─────────────────────────────────── */}
       {correctionLog.length > 0 && (
