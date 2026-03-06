@@ -71,7 +71,7 @@ function ScoreRing({ score }) {
 const FormattingResults = ({ results, selectedJournal, uploadedFile }) => {
   if (!results) return null;
 
-  const apiBaseUrl    = 'http://localhost:8001';
+  const apiBaseUrl = process.env.REACT_APP_API_URL || 'http://localhost:8001';
   const journalId     = selectedJournal || (results.journal ? results.journal.toLowerCase() : '');
   const filePath      = results.file_path || '';
   const fileName      = filePath ? filePath.split(/[/\\]/).pop() : '';
