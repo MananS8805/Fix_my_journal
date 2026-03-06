@@ -116,14 +116,54 @@ class ManuscriptParser:
             doc = fitz.open(source)
             pages_text = [page.get_text() for page in doc]
             doc.close()
-            return "\n\n".join(pages_text)
+            return "\n\n".join(pages_text), []
+
         elif source.lower().endswith((".docx", ".doc")):
             from docx import Document as DocxDocument
+            from docx.text.paragraph import Paragraph
+            from docx.table import Table
+
             doc = DocxDocument(source)
-            return "\n\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            parts = []
+            tables = []
+            table_index = 0
+
+            for block in doc.element.body:
+                tag = block.tag.split('}')[-1]
+
+                if tag == 'p':
+                    para = Paragraph(block, doc)
+                    if para.text.strip():
+                        parts.append(para.text)
+
+                elif tag == 'tbl':
+                    table = Table(block, doc)
+                    # Extract table content directly in Python
+                    rows = []
+                    for row in table.rows:
+                        cells = [cell.text.strip().replace('\n', ' ')
+                                for cell in row.cells]
+                        rows.append(cells)
+
+                    # Use first row as caption hint
+                    caption = f"Table {table_index + 1}"
+                    if rows:
+                        caption = f"Table {table_index + 1}: {rows[0][0][:50]}"
+
+                    tables.append({
+                        "caption": caption,
+                        "content": rows,
+                        "page": 1
+                    })
+
+                    # Put a placeholder in text so body position is noted
+                    parts.append(f"[TABLE {table_index}: {caption}]")
+                    table_index += 1
+
+            return "\n\n".join(parts), tables
+
         else:
             raise ValueError(f"Unsupported file type: {Path(source).suffix}")
-
     # ── Groq API call ──────────────────────────────────────────────────────────
 
     def _call_groq(self, prompt):
@@ -149,8 +189,8 @@ class ManuscriptParser:
     def parse(self, source):
         print(f"Starting parsing for: {source}")
         try:
-            raw_text = self._extract_text(source)
-            print(f"Extracted {len(raw_text)} characters from document.")
+            raw_text, extracted_tables = self._extract_text(source)
+            print(f"Extracted {len(raw_text)} characters, {len(extracted_tables)} tables from document.")
         except Exception as e:
             print(f"Text extraction failed: {e}")
             return {"error": f"Text extraction failed: {str(e)}"}
@@ -159,12 +199,14 @@ class ManuscriptParser:
             return {"error": "Document appears to be empty or could not be read."}
 
         if len(raw_text) <= self.CHUNK_SIZE:
-            print("Document is small - processing in single shot.")
-            return self._parse_chunk(raw_text, is_first_chunk=True, is_last_chunk=True)
+            result = self._parse_chunk(raw_text, is_first_chunk=True, is_last_chunk=True)
         else:
-            print(f"Document is large ({len(raw_text)} chars) - using chunked processing.")
-            return self._parse_large_document(raw_text)
+            result = self._parse_large_document(raw_text)
 
+        # Merge Python-extracted tables back in
+        result["tables"] = extracted_tables
+        print(f"TABLES FOUND: {len(extracted_tables)}")
+        return result
     # ── Chunked processing ─────────────────────────────────────────────────────
 
     def _parse_large_document(self, raw_text):
@@ -345,6 +387,8 @@ IMPORTANT RULES:
 
         raw_json = self._call_groq(prompt)
         result   = json.loads(raw_json)
+        print(f"CHUNK TABLES: {len(result.get('tables', []))}")
+        print(f"CHUNK TABLE SAMPLE: {result.get('tables', [{}])[0] if result.get('tables') else 'NONE'}")
         manuscript = Manuscript(**result)
         return self._to_legacy_format(manuscript)
 

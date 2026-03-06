@@ -9,11 +9,23 @@ import {
   Card,
   CardContent,
   Grid,
-  Chip
+  Chip,
 } from '@mui/material';
 import axios from 'axios';
 
-const JournalSelector = ({ journals, selectedJournal, onJournalChange }) => {
+const EXPORT_FORMATS = [
+  { id: 'docx', icon: '📝', label: 'Word', desc: 'Easy to edit' },
+  { id: 'latex', icon: '⌨️', label: 'LaTeX', desc: 'For typesetting' },
+  { id: 'pdf',  icon: '📄', label: 'PDF',   desc: 'Print-ready' },
+];
+
+const JournalSelector = ({
+  journals,
+  selectedJournal,
+  onJournalChange,
+  exportFormat,
+  onExportFormatChange,
+}) => {
   const [journalDetails, setJournalDetails] = useState(null);
 
   useEffect(() => {
@@ -27,118 +39,176 @@ const JournalSelector = ({ journals, selectedJournal, onJournalChange }) => {
   const loadJournalDetails = async (journalId) => {
     try {
       const response = await axios.get(`http://localhost:8001/journals/${journalId}`);
-      if (response.data.success) {
-        setJournalDetails(response.data.data);
-      }
+      if (response.data.success) setJournalDetails(response.data.data);
     } catch (error) {
       console.error('Error loading journal details:', error);
     }
   };
 
   return (
-    <Box sx={{ mb: 4 }}>
-      <Typography variant="h5" gutterBottom>
-        Select Target Journal
-      </Typography>
+    <Box sx={{ mb: 2 }}>
+      <Grid container spacing={2.5}>
 
-      <FormControl fullWidth sx={{ mb: 3 }}>
-        <InputLabel>Select Journal</InputLabel>
-        <Select
-          value={selectedJournal}
-          label="Select Journal"
-          onChange={(e) => onJournalChange(e.target.value)}
-        >
-          {journals.map((journal) => (
-            <MenuItem key={journal.id} value={journal.id}>
-              {journal.name} - {journal.abstract_max_words} word abstract
-            </MenuItem>
-          ))}
-        </Select>
-      </FormControl>
+        {/* ── Journal Picker ── */}
+        <Grid item xs={12} md={7}>
+          <Card elevation={0}>
+            <CardContent sx={{ p: 3 }}>
+              <Typography variant="h6" gutterBottom color="text.primary">
+                Target Journal
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
+                Select the journal you're submitting to.
+              </Typography>
 
-      {journalDetails && (
-        <Card sx={{ mt: 2 }}>
-          <CardContent>
-            <Typography variant="h6" gutterBottom>
-              {journalDetails.name} Guidelines
-            </Typography>
+              <FormControl fullWidth>
+                <InputLabel>Select Journal</InputLabel>
+                <Select
+                  value={selectedJournal}
+                  label="Select Journal"
+                  onChange={(e) => onJournalChange(e.target.value)}
+                >
+                  {journals.map((journal) => (
+                    <MenuItem key={journal.id} value={journal.id}>
+                      <Box>
+                        <Typography variant="body2" fontWeight={600}>
+                          {journal.name}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {journal.abstract_max_words} word abstract limit
+                        </Typography>
+                      </Box>
+                    </MenuItem>
+                  ))}
+                </Select>
+              </FormControl>
 
-            <Grid container spacing={2}>
-              <Grid item xs={12} sm={6}>
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" color="primary">
-                    Abstract
+              {journalDetails && (
+                <Box sx={{
+                  mt: 2.5, p: 2,
+                  border: '1px solid #C7D9FF',
+                  borderRadius: '12px',
+                  bgcolor: '#F8FAFF',
+                }}>
+                  <Typography variant="subtitle2" color="primary" gutterBottom fontWeight={700}>
+                    {journalDetails.name} Guidelines
                   </Typography>
-                  <Typography variant="body2">
-                    Max {journalDetails.abstract_max_words} words
-                  </Typography>
-                </Box>
 
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" color="primary">
-                    Citation Style
-                  </Typography>
-                  <Typography variant="body2">
-                    {journalDetails.reference_style}
-                  </Typography>
-                </Box>
-
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" color="primary">
-                    Page Limit
-                  </Typography>
-                  <Typography variant="body2">
-                    {journalDetails.page_limit || 'No limit'}
-                  </Typography>
-                </Box>
-              </Grid>
-
-              <Grid item xs={12} sm={6}>
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" color="primary">
-                    Font and Size
-                  </Typography>
-                  <Typography variant="body2">
-                    {journalDetails.font}, {journalDetails.font_size}pt
-                  </Typography>
-                </Box>
-
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" color="primary">
-                    Line Spacing
-                  </Typography>
-                  <Typography variant="body2">
-                    {journalDetails.line_spacing}
-                  </Typography>
-                </Box>
-
-                <Box sx={{ mb: 2 }}>
-                  <Typography variant="subtitle2" color="primary">
-                    Required Structure
-                  </Typography>
-                  <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                    {journalDetails.structure.slice(0, 4).map((section, index) => (
-                      <Chip
-                        key={index}
-                        label={section}
-                        size="small"
-                        variant="outlined"
-                      />
+                  <Grid container spacing={1.5}>
+                    {[
+                      { label: 'Abstract Limit',   value: `${journalDetails.abstract_max_words} words` },
+                      { label: 'Citation Style',    value: journalDetails.reference_style },
+                      { label: 'Page Limit',        value: journalDetails.page_limit || 'No limit' },
+                      { label: 'Font',              value: `${journalDetails.font}, ${journalDetails.font_size}pt` },
+                      { label: 'Line Spacing',      value: journalDetails.line_spacing },
+                    ].map(({ label, value }) => (
+                      <Grid item xs={6} key={label}>
+                        <Typography variant="caption" color="text.secondary" display="block">
+                          {label}
+                        </Typography>
+                        <Typography variant="body2" fontWeight={600} color="text.primary">
+                          {value}
+                        </Typography>
+                      </Grid>
                     ))}
-                    {journalDetails.structure.length > 4 && (
-                      <Chip
-                        label={`+${journalDetails.structure.length - 4} more`}
-                        size="small"
-                        variant="outlined"
-                      />
+
+                    {journalDetails.structure?.length > 0 && (
+                      <Grid item xs={12}>
+                        <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 0.75 }}>
+                          Required Structure
+                        </Typography>
+                        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.6 }}>
+                          {journalDetails.structure.slice(0, 5).map((section, i) => (
+                            <Chip
+                              key={i}
+                              label={section}
+                              size="small"
+                              sx={{
+                                bgcolor: '#EEF3FF',
+                                color: 'primary.main',
+                                border: '1px solid #C7D9FF',
+                                fontFamily: "'JetBrains Mono', monospace",
+                                fontSize: 10,
+                              }}
+                            />
+                          ))}
+                          {journalDetails.structure.length > 5 && (
+                            <Chip
+                              label={`+${journalDetails.structure.length - 5} more`}
+                              size="small"
+                              sx={{
+                                bgcolor: '#F4F7FC',
+                                color: 'text.secondary',
+                                border: '1px solid #E2EAF4',
+                                fontSize: 10,
+                              }}
+                            />
+                          )}
+                        </Box>
+                      </Grid>
                     )}
-                  </Box>
+                  </Grid>
                 </Box>
-              </Grid>
-            </Grid>
-          </CardContent>
-        </Card>
-      )}
+              )}
+            </CardContent>
+          </Card>
+        </Grid>
+
+        {/* ── Export Format Picker ── */}
+        <Grid item xs={12} md={5}>
+          <Card elevation={0} sx={{ height: '100%' }}>
+            <CardContent sx={{ p: 3 }}>
+              <Typography variant="h6" gutterBottom color="text.primary">
+                Export Format
+              </Typography>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2.5 }}>
+                Choose how you want to receive your formatted manuscript.
+              </Typography>
+
+              <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                {EXPORT_FORMATS.map((fmt) => {
+                  const selected = exportFormat === fmt.id;
+                  return (
+                    <Box
+                      key={fmt.id}
+                      onClick={() => onExportFormatChange(fmt.id)}
+                      sx={{
+                        display: 'flex', alignItems: 'center', gap: 2,
+                        p: 1.5, px: 2,
+                        borderRadius: '12px',
+                        border: '1.5px solid',
+                        borderColor: selected ? 'primary.main' : '#E2EAF4',
+                        bgcolor: selected ? '#EEF3FF' : '#F8FAFC',
+                        cursor: 'pointer',
+                        transition: 'all 0.14s',
+                        '&:hover': {
+                          borderColor: '#C7D9FF',
+                          bgcolor: '#F4F7FF',
+                        },
+                      }}
+                    >
+                      <Typography sx={{ fontSize: 20 }}>{fmt.icon}</Typography>
+                      <Box sx={{ flex: 1 }}>
+                        <Typography variant="body2" fontWeight={700} color={selected ? 'primary.main' : 'text.primary'}>
+                          {fmt.label}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {fmt.desc}
+                        </Typography>
+                      </Box>
+                      {selected && (
+                        <Box sx={{
+                          width: 8, height: 8, borderRadius: '50%',
+                          bgcolor: 'primary.main',
+                        }} />
+                      )}
+                    </Box>
+                  );
+                })}
+              </Box>
+            </CardContent>
+          </Card>
+        </Grid>
+      </Grid>
     </Box>
   );
 };
