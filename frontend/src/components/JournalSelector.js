@@ -13,6 +13,7 @@ import {
 } from '@mui/material';
 import axios from 'axios';
 
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8001';
 const EXPORT_FORMATS = [
   { id: 'docx', icon: '📝', label: 'Word', desc: 'Easy to edit' },
   { id: 'latex', icon: '⌨️', label: 'LaTeX', desc: 'For typesetting' },
@@ -38,7 +39,7 @@ const JournalSelector = ({
 
   const loadJournalDetails = async (journalId) => {
     try {
-      const response = await axios.get(`http://localhost:8001/journals/${journalId}`);
+      const response = await axios.get(`${API_BASE}/journals/${journalId}`);
       if (response.data.success) setJournalDetails(response.data.data);
     } catch (error) {
       console.error('Error loading journal details:', error);
