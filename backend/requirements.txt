@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+python-docx
+groq
+pymupdf
+pydantic-settings
+requests
+beautifulsoup4
+reportlab
+citeproc-py
+citeproc-py-styles
+python-dotenv
