@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+python-multipart
+docling
+python-docx
+google-generativeai
+pydantic-settings
+requests
+beautifulsoup4
+reportlab
+citeproc-py
+citeproc-py-styles
