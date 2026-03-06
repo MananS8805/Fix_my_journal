@@ -37,7 +37,7 @@ class ManuscriptParser:
         if not self.api_key:
             raise ValueError("GOOGLE_API_KEY environment variable not set.")
         genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel(model_name="gemini-1.5-flash")
+        self.model = genai.GenerativeModel(model_name="gemini-2.0-flash")
 
     def parse(self, source: str) -> Dict[str, Any]:
         """

@@ -26,7 +26,7 @@ const JournalSelector = ({ journals, selectedJournal, onJournalChange }) => {
 
   const loadJournalDetails = async (journalId) => {
     try {
-      const response = await axios.get(`/journals/${journalId}`);
+      const response = await axios.get(`http://localhost:8001/journals/${journalId}`);
       if (response.data.success) {
         setJournalDetails(response.data.data);
       }

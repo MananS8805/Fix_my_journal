@@ -10,3 +10,4 @@ beautifulsoup4
 reportlab
 citeproc-py
 citeproc-py-styles
+python-dotenv
