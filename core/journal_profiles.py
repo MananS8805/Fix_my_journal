@@ -85,9 +85,9 @@ JOURNAL_PROFILES = {
         "structure": ["Abstract", "Introduction", "Related Work", "Methodology", "Results", "Discussion", "Conclusion", "References"],
         "csl_style": "ieee",
         "heading_styles": {
-            1: {"font": "Times New Roman", "size": 10, "bold": True,  "italic": False, "caps": True,
+            1: {"font": "Times New Roman", "size": 12, "bold": True,  "italic": False, "caps": True,
                 "spacing_before": 10, "spacing_after": 4, "alignment": "center"},
-            2: {"font": "Times New Roman", "size": 10, "bold": True,  "italic": False, "caps": False,
+            2: {"font": "Times New Roman", "size": 11, "bold": True,  "italic": False, "caps": False,
                 "spacing_before": 6,  "spacing_after": 3, "alignment": "left"},
             3: {"font": "Times New Roman", "size": 10, "bold": False, "italic": True,  "caps": False,
                 "spacing_before": 4,  "spacing_after": 2, "alignment": "left"},

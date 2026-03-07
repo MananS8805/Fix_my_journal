@@ -85,53 +85,110 @@ class Table(BaseModel):
     content: List[List[str]] = Field(description="The table content as a 2D JSON array.")
     page: int = Field(description="The page number where the table is found.")
 
-def _reinject_table_placeholders(raw_text: str, body_lines: list, tables: list) -> str:
-    """
-    Re-inject [TABLE X:] placeholders into Groq body output.
-    Strategy: find paragraphs immediately BEFORE each table in raw_text,
-    then find that paragraph in body_lines and insert placeholder after it.
-    """
-    import re
-
-    # Extract (preceding_text, table_index) pairs from raw_text
+def _inject_tables_into_sections(raw_text: str, sections: list, tables: list) -> list:
+    import re, copy
+    if not tables:
+        return sections
     raw_lines = raw_text.split("\n")
-    insertions = {}  # body_line_index -> placeholder string
-
+    anchors = []
     for i, raw_line in enumerate(raw_lines):
         m = re.match(r'^\[TABLE (\d+):', raw_line.strip())
         if m:
             idx = int(m.group(1))
-            placeholder = f"[TABLE {idx}: Table {idx+1}]"
-
-            # Find the paragraph just before this table in raw_text
-            prev_text = ""
-            for j in range(i - 1, max(i - 5, -1), -1):
-                if raw_lines[j].strip():
-                    prev_text = raw_lines[j].strip()[:60]
+            anchor = ""
+            for j in range(i - 1, max(i - 10, -1), -1):
+                stripped = raw_lines[j].strip()
+                if stripped and not re.match(r'^\[TABLE', stripped):
+                    anchor = stripped[:60].lower()
                     break
+            anchors.append((idx, anchor))
+    if not anchors:
+        if sections:
+            for idx in range(len(tables)):
+                sections[-1]["blocks"].append({"type": "table", "table_index": idx})
+        return sections
+    sections = copy.deepcopy(sections)
+    injected = set()
+    for tbl_idx, anchor in anchors:
+        if tbl_idx >= len(tables):
+            continue
+        if not anchor:
+            sections[-1]["blocks"].append({"type": "table", "table_index": tbl_idx})
+            injected.add(tbl_idx)
+            continue
+        best_sec_i = best_block_i = None
+        best_score = 0
+        for si, sec in enumerate(sections):
+            for bi, block in enumerate(sec.get("blocks", [])):
+                text = block.get("text", "").lower()
+                if not text:
+                    continue
+                score = len(set(anchor.split()) & set(text[:60].split()))
+                if score > best_score:
+                    best_score = score; best_sec_i = si; best_block_i = bi
+        if best_sec_i is not None and best_score >= 2:
+            sections[best_sec_i]["blocks"].insert(best_block_i + 1,
+                {"type": "table", "table_index": tbl_idx})
+        else:
+            sections[-1]["blocks"].append({"type": "table", "table_index": tbl_idx})
+        injected.add(tbl_idx)
+    for idx in range(len(tables)):
+        if idx not in injected:
+            sections[-1]["blocks"].append({"type": "table", "table_index": idx})
+    return sections
 
-            if not prev_text:
-                continue
 
-            # Find this paragraph in body_lines (fuzzy match first 40 chars)
-            for k, body_line in enumerate(body_lines):
-                if prev_text[:40].lower() in body_line.lower():
-                    insertions[k] = placeholder
+def _dedup_sections(sections: list) -> list:
+    import re
+    def _norm(t):
+        t = re.sub(r'[^a-z\s]', '', t.lower())
+        return re.sub(r'\s+', ' ', t).strip()
+    def _first_text(sec):
+        for b in sec.get("blocks", []):
+            t = b.get("text", "").strip()
+            if t: return _norm(t)[:80]
+        return ""
+    def _len(sec):
+        return sum(len(b.get("text","")) for b in sec.get("blocks",[]))
+    # Pass 1: merge consecutive same-heading sections
+    merged = []
+    for sec in sections:
+        if merged and _norm(merged[-1]["heading"]) == _norm(sec["heading"]):
+            existing = {_norm(b.get("text","")) for b in merged[-1]["blocks"]}
+            for b in sec.get("blocks", []):
+                if _norm(b.get("text","")) not in existing:
+                    merged[-1]["blocks"].append(b)
+                    existing.add(_norm(b.get("text","")))
+        else:
+            merged.append(dict(sec))
+    # Pass 2: drop non-consecutive duplicates
+    seen, result = [], []
+    for sec in merged:
+        nh, ft = _norm(sec["heading"]), _first_text(sec)
+        dup = False
+        for i, (sh, sf) in enumerate(seen):
+            if sh == nh:
+                if ft and sf and (ft[:40] in sf or sf[:40] in ft):
+                    dup = True
+                    if _len(sec) > _len(result[i]):
+                        result[i] = sec; seen[i] = (nh, ft)
                     break
+                elif not ft or not sf:
+                    dup = True; break
+        if not dup:
+            seen.append((nh, ft)); result.append(sec)
+    removed = len(sections) - len(result)
+    if removed:
+        print(f"DEDUP: {len(sections)} → {len(result)} sections ({removed} removed)")
+    return result
 
-    # Build new body with placeholders inserted
-    new_lines = []
-    for k, line in enumerate(body_lines):
-        new_lines.append(line)
-        if k in insertions:
-            new_lines.append("")
-            new_lines.append(insertions[k])
-            new_lines.append("")
 
-    return "\n".join(new_lines)
+
 class Manuscript(BaseModel):
     title: str = Field(description="The primary title of the manuscript.")
     abstract: str = Field(description="The complete abstract of the manuscript.")
+    authors: List[str] = Field(default=[], description="Full names of all authors.")
+    affiliations: List[str] = Field(default=[], description="Author affiliations/institutions.")
     sections: List[Section] = Field(description="A list of all sections in the document.")
     tables: List[Table] = Field(default=[],description="A list of all tables extracted from the document.")
     citations: List[str] = Field(default=[],description="A list of all bibliographic citations or references.")
@@ -161,7 +218,7 @@ class ManuscriptParser:
             doc = fitz.open(source)
             pages_text = [page.get_text() for page in doc]
             doc.close()
-            return "\n\n".join(pages_text), []
+            return "\n\n".join(pages_text), [], [], []
 
         elif source.lower().endswith((".docx", ".doc")):
             from docx import Document as DocxDocument
@@ -172,6 +229,39 @@ class ManuscriptParser:
             parts = []
             tables = []
             table_index = 0
+
+            # ── Extract authors & affiliations directly from Python ────────────
+            # Scan the first ~10 paragraphs (before Abstract) for author/affil
+            # patterns. This is far more reliable than asking the LLM to find them
+            # in a raw text dump.
+            extracted_authors      = []
+            extracted_affiliations = []
+            _HEADING_STYLES = {"heading 1", "heading 2", "heading 3",
+                               "title", "main heading"}
+            _STOP_STYLES    = {"main heading", "content"}  # abstract/body start
+            _AFFIL_KEYWORDS = {"university", "department", "institute",
+                               "college", "school", "faculty", "lab",
+                               "centre", "center", "research", "india",
+                               "usa", "uk", "email", "@"}
+
+            for pi, para in enumerate(doc.paragraphs[:12]):
+                text  = para.text.strip()
+                style = para.style.name.lower()
+                if not text:
+                    continue
+                # Stop when we hit the abstract or body
+                if style in _STOP_STYLES and pi > 1:
+                    break
+                if style in _HEADING_STYLES:
+                    continue   # skip title heading itself
+                # Affiliation heuristic: contains institution keywords
+                tl = text.lower()
+                if any(kw in tl for kw in _AFFIL_KEYWORDS):
+                    extracted_affiliations.append(text)
+                # Author heuristic: short line (< 60 chars), no institution
+                # keywords, appears before affiliation lines
+                elif len(text) < 80 and not extracted_affiliations:
+                    extracted_authors.append(text.rstrip())
 
             for block in doc.element.body:
                 tag = block.tag.split('}')[-1]
@@ -205,10 +295,13 @@ class ManuscriptParser:
                     parts.append(f"[TABLE {table_index}: {caption}]")
                     table_index += 1
 
-            return "\n\n".join(parts), tables
+            print(f"EXTRACTED AUTHORS: {extracted_authors}")
+            print(f"EXTRACTED AFFILIATIONS: {extracted_affiliations}")
+            return "\n\n".join(parts), tables, extracted_authors, extracted_affiliations
 
         else:
             raise ValueError(f"Unsupported file type: {Path(source).suffix}")
+        return "", [], [], []  # unreachable but satisfies type checker
     # ── Groq API call ──────────────────────────────────────────────────────────
 
     def _call_groq(self, prompt):
@@ -234,7 +327,7 @@ class ManuscriptParser:
     def parse(self, source):
         print(f"Starting parsing for: {source}")
         try:
-            raw_text, extracted_tables = self._extract_text(source)
+            raw_text, extracted_tables, py_authors, py_affiliations = self._extract_text(source)
             print(f"Extracted {len(raw_text)} characters, {len(extracted_tables)} tables from document.")
         except Exception as e:
             print(f"Text extraction failed: {e}")
@@ -248,12 +341,21 @@ class ManuscriptParser:
         else:
             result = self._parse_large_document(raw_text)
 
-        if extracted_tables:
-            body_lines = result.get("body", "").split("\n")
-            new_body   = _reinject_table_placeholders(raw_text, body_lines, extracted_tables)
-            result["body"] = new_body
+        # Python-extracted authors/affiliations are authoritative — override LLM
+        if py_authors:
+            result.setdefault("metadata", {})["authors"] = py_authors
+        if py_affiliations:
+            result.setdefault("metadata", {})["affiliations"] = py_affiliations
 
-        # Merge Python-extracted tables back in
+        if extracted_tables:
+            sections = result.get("sections", [])
+            if sections:
+                result["sections"] = _inject_tables_into_sections(
+                    raw_text, sections, extracted_tables
+                )
+            result["body"] = self._sections_to_markdown(result["sections"])
+
+        # Python-extracted tables are always authoritative
         result["tables"] = extracted_tables
         print(f"TABLES FOUND: {len(extracted_tables)}")
         return result
@@ -280,6 +382,8 @@ class ManuscriptParser:
 
         title        = ""
         abstract     = ""
+        authors      = []
+        affiliations = []
         keywords     = []
         all_sections = []
         all_tables   = []
@@ -301,9 +405,11 @@ class ManuscriptParser:
                                                is_first_chunk=is_first,
                                                is_last_chunk=is_last)
                     if is_first:
-                        title    = result.get("metadata", {}).get("title", "")
-                        abstract = result.get("abstract", "")
-                        keywords = result.get("metadata", {}).get("keywords", [])
+                        title        = result.get("metadata", {}).get("title", "")
+                        abstract     = result.get("abstract", "")
+                        authors      = result.get("metadata", {}).get("authors", [])
+                        affiliations = result.get("metadata", {}).get("affiliations", [])
+                        keywords     = result.get("metadata", {}).get("keywords", [])
 
                     all_sections.extend(result.get("sections", []))
                     all_tables.extend(result.get("tables", []))
@@ -322,10 +428,10 @@ class ManuscriptParser:
                         break
 
         return {
-            "metadata":   {"title": title, "authors": [], "keywords": keywords},
+            "metadata":   {"title": title, "authors": authors, "affiliations": affiliations, "keywords": keywords},
             "abstract":   abstract,
             "body":       self._sections_to_markdown(all_sections),
-            "sections":   all_sections,
+            "sections":   _dedup_sections(all_sections),
             "references": references,
             "figures":    [],
             "tables":     all_tables,
@@ -464,9 +570,10 @@ IMPORTANT RULES:
 
         return {
             "metadata": {
-                "title":    manuscript.title,
-                "authors":  [],
-                "keywords": manuscript.keywords,
+                "title":        manuscript.title,
+                "authors":      manuscript.authors,
+                "affiliations": manuscript.affiliations,
+                "keywords":     manuscript.keywords,
             },
             "abstract":   manuscript.abstract,
             "body":       self._sections_to_markdown(rich_sections),
@@ -514,6 +621,11 @@ IMPORTANT RULES:
                 elif btype == "list_item_ordered":
                     item_num = block.get("level", 1)
                     lines.append(f"{pad}{item_num}. {text}")
+
+                elif btype == "table":
+                    tbl_idx = block.get("table_index", 0)
+                    lines.append(f"[TABLE {tbl_idx}: Table {tbl_idx+1}]")
+                    lines.append("")
 
                 else:
                     lines.append(pad + text)

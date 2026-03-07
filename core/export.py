@@ -422,7 +422,8 @@ def _markdown_to_docx_fallback(markdown_text: str,
         if line.startswith("### "):
             in_list = False; list_counter = 0
             text = re.sub(r':\s*$', '', line[4:].strip())
-            para = doc.add_heading(text, level=3)
+            para = doc.add_paragraph()
+            para.add_run(text)
             _style_heading(para, 3, profile)
             last_was_heading = True
 
@@ -430,7 +431,8 @@ def _markdown_to_docx_fallback(markdown_text: str,
         elif line.startswith("## "):
             in_list = False; list_counter = 0
             text = re.sub(r':\s*$', '', line[3:].strip())
-            para = doc.add_heading(text, level=2)
+            para = doc.add_paragraph()
+            para.add_run(text)
             _style_heading(para, 2, profile)
             last_was_heading = True
 
@@ -449,7 +451,8 @@ def _markdown_to_docx_fallback(markdown_text: str,
                 columns_applied = True
                 in_header       = False
 
-            para = doc.add_heading(text, level=1)
+            para = doc.add_paragraph()
+            para.add_run(text)
             _style_heading(para, 1, profile)
             last_was_heading = True
 
@@ -585,7 +588,8 @@ def _markdown_to_docx_fallback(markdown_text: str,
         if line.startswith("### "):
             in_list = False; list_counter = 0
             text = re.sub(r':\s*$', '', line[4:].strip())
-            para = doc.add_heading(text, level=3)
+            para = doc.add_paragraph()
+            para.add_run(text)
             _style_heading(para, 3, profile)
             last_was_heading = True
 
@@ -593,7 +597,8 @@ def _markdown_to_docx_fallback(markdown_text: str,
         elif line.startswith("## "):
             in_list = False; list_counter = 0
             text = re.sub(r':\s*$', '', line[3:].strip())
-            para = doc.add_heading(text, level=2)
+            para = doc.add_paragraph()
+            para.add_run(text)
             _style_heading(para, 2, profile)
             last_was_heading = True
 
@@ -611,7 +616,8 @@ def _markdown_to_docx_fallback(markdown_text: str,
                 columns_applied = True
                 in_header       = False
 
-            para = doc.add_heading(text, level=1)
+            para = doc.add_paragraph()
+            para.add_run(text)
             _style_heading(para, 1, profile)
             last_was_heading = True
 
@@ -764,7 +770,8 @@ def _sections_to_docx(doc: Document, sections: list, profile: Dict) -> None:
         sec_heading = sec.get("heading", "")
 
         if sec_heading:
-            para = doc.add_heading(sec_heading, level=sec_level)
+            para = doc.add_paragraph()
+            para.add_run(sec_heading)
             _style_heading(para, sec_level, profile)
 
         for block in sec.get("blocks", []):
@@ -781,7 +788,8 @@ def _sections_to_docx(doc: Document, sections: list, profile: Dict) -> None:
             # Sub-heading inside a section
             if btype == "heading":
                 hlevel = blevel if blevel else min(sec_level + 1, 3)
-                para   = doc.add_heading(text, level=hlevel)
+                para   = doc.add_paragraph()
+                para.add_run(text)
                 _style_heading(para, hlevel, profile)
 
             # Bullet list item
@@ -815,6 +823,44 @@ def _sections_to_docx(doc: Document, sections: list, profile: Dict) -> None:
                     para.paragraph_format.left_indent = Inches(0.25 * indent)
 
 
+def _insert_column_section_break(doc: Document, para_index: int,
+                                  num_columns: int) -> None:
+    """
+    Insert a continuous section break after para_index so paragraphs
+    before it stay single-column (title/abstract) and paragraphs from
+    that index onward flow in num_columns columns.
+    """
+    if num_columns <= 1 or para_index is None:
+        return
+    anchor_idx = max(para_index - 1, 0)
+    try:
+        anchor_para = doc.paragraphs[anchor_idx]
+    except IndexError:
+        return
+
+    pPr = anchor_para._p.get_or_add_pPr()
+    for existing in pPr.findall(qn("w:sectPr")):
+        pPr.remove(existing)
+
+    sectPr  = OxmlElement("w:sectPr")
+    type_el = OxmlElement("w:type")
+    type_el.set(qn("w:val"), "continuous")
+    sectPr.append(type_el)
+
+    cols_el = OxmlElement("w:cols")
+    cols_el.set(qn("w:num"),        "1")
+    cols_el.set(qn("w:equalWidth"), "1")
+    sectPr.append(cols_el)
+
+    pgSz = OxmlElement("w:pgSz")
+    pgSz.set(qn("w:w"), "12240")
+    pgSz.set(qn("w:h"), "15840")
+    sectPr.append(pgSz)
+    pPr.append(sectPr)
+
+    _set_columns(doc, num_columns)
+
+
 def _rich_to_docx(manuscript: Dict,
                   output_path: str,
                   profile: Dict,
@@ -837,45 +883,86 @@ def _rich_to_docx(manuscript: Dict,
         section.left_margin   = Inches(margin)
         section.right_margin  = Inches(margin)
 
-    _set_columns(doc, profile.get("columns", 1))
+    num_columns = profile.get("columns", 1)
+    _set_columns(doc, 1)   # start single-column; body gets multi-col via section break
 
     font_name = profile.get("font",      "Times New Roman")
     font_size = profile.get("font_size", 12)
 
-    # Title
+    # ── Title ─────────────────────────────────────────────────────────────────
     title = re.sub(r"^#+\s*", "",
                    manuscript.get("metadata", {}).get("title", ""))
     if title:
-        t_para = doc.add_heading(title, level=0)
+        t_para = doc.add_paragraph()
+        t_run  = t_para.add_run(title)
+        t_run.font.name = font_name
+        t_run.font.size = Pt(font_size + 4)
+        t_run.font.bold = True
         t_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        for run in t_para.runs:
-            run.font.name = font_name
-            run.font.size = Pt(font_size + 4)
-            run.font.bold = True
+        _apply_paragraph_spacing(t_para, space_before_pt=0, line_spacing=1.0)
+        t_para.paragraph_format.space_after = Pt(4)
 
-    # Abstract
+    # ── Authors ───────────────────────────────────────────────────────────────
+    authors = manuscript.get("metadata", {}).get("authors", [])
+    if authors:
+        author_str = ", ".join(authors) if isinstance(authors, list) else str(authors)
+        a_para = doc.add_paragraph()
+        a_run  = a_para.add_run(author_str)
+        a_run.font.name = font_name
+        a_run.font.size = Pt(font_size)
+        a_run.font.bold = True
+        a_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _apply_paragraph_spacing(a_para, space_before_pt=4, line_spacing=1.0)
+        a_para.paragraph_format.space_after = Pt(2)
+
+    # ── Affiliations ──────────────────────────────────────────────────────────
+    affiliations = manuscript.get("metadata", {}).get("affiliations", [])
+    if affiliations:
+        aff_str = " | ".join(affiliations) if isinstance(affiliations, list) else str(affiliations)
+        af_para = doc.add_paragraph()
+        af_run  = af_para.add_run(aff_str)
+        af_run.font.name   = font_name
+        af_run.font.size   = Pt(font_size - 1)
+        af_run.font.italic = True
+        af_para.alignment  = WD_ALIGN_PARAGRAPH.CENTER
+        _apply_paragraph_spacing(af_para, space_before_pt=0, line_spacing=1.0)
+        af_para.paragraph_format.space_after = Pt(8)
+
+    # ── Abstract ──────────────────────────────────────────────────────────────
     abstract = manuscript.get("abstract", "")
     if abstract:
-        a_head = doc.add_heading("Abstract", level=1)
+        a_head = doc.add_paragraph()
+        a_head.add_run("Abstract")
         _style_heading(a_head, 1, profile)
         a_para = doc.add_paragraph()
         _inline_runs(a_para, abstract, font_name, font_size, base_italic=True)
         _style_body(a_para, profile)
         a_para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
-    # Body sections
-    _sections_to_docx(doc, sections, profile)
+    # Record index so column break goes right before the body sections
+    body_start_para_index = len(doc.paragraphs)
 
-    # Tables
+    # ── Body sections (tables render inline via table blocks) ─────────────────
+    _sections_to_docx(doc, sections, profile, tables=tables)
+
+    # ── Safety-net: append any tables not referenced by a block ──────────────
     if tables:
-        for table_data in tables:
-            doc.add_paragraph()
-            _add_table(doc, table_data, profile)
+        injected = {
+            block.get("table_index", -1)
+            for sec in sections
+            for block in sec.get("blocks", [])
+            if block.get("type") == "table"
+        }
+        for ti, table_data in enumerate(tables):
+            if ti not in injected:
+                doc.add_paragraph()
+                _add_table(doc, table_data, profile)
 
-    # References
+    # ── References ────────────────────────────────────────────────────────────
     refs = manuscript.get("references", "")
     if refs:
-        r_head = doc.add_heading("References", level=1)
+        r_head = doc.add_paragraph()
+        r_head.add_run("References")
         _style_heading(r_head, 1, profile)
         ref_size = max(font_size - 1, 8)
         for line in refs.split("\n"):
@@ -883,10 +970,13 @@ def _rich_to_docx(manuscript: Dict,
             if line:
                 r_para = doc.add_paragraph()
                 _inline_runs(r_para, line, font_name, ref_size)
-                _apply_paragraph_spacing(r_para, space_before_pt=2,
-                                          line_spacing=1.2)
+                _apply_paragraph_spacing(r_para, space_before_pt=2, line_spacing=1.2)
                 r_para.paragraph_format.left_indent       = Inches(0.25)
                 r_para.paragraph_format.first_line_indent = Inches(-0.25)
+
+    # ── Column section break: title+abstract full-width, body multi-col ───────
+    if num_columns > 1:
+        _insert_column_section_break(doc, body_start_para_index, num_columns)
 
     doc.save(output_path)
     return output_path
