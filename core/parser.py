@@ -21,6 +21,8 @@ from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 
+from sympy import re
+
 
 # ── Pydantic schema ────────────────────────────────────────────────────────────
 
@@ -83,7 +85,50 @@ class Table(BaseModel):
     content: List[List[str]] = Field(description="The table content as a 2D JSON array.")
     page: int = Field(description="The page number where the table is found.")
 
+def _reinject_table_placeholders(raw_text: str, body_lines: list, tables: list) -> str:
+    """
+    Re-inject [TABLE X:] placeholders into Groq body output.
+    Strategy: find paragraphs immediately BEFORE each table in raw_text,
+    then find that paragraph in body_lines and insert placeholder after it.
+    """
+    import re
 
+    # Extract (preceding_text, table_index) pairs from raw_text
+    raw_lines = raw_text.split("\n")
+    insertions = {}  # body_line_index -> placeholder string
+
+    for i, raw_line in enumerate(raw_lines):
+        m = re.match(r'^\[TABLE (\d+):', raw_line.strip())
+        if m:
+            idx = int(m.group(1))
+            placeholder = f"[TABLE {idx}: Table {idx+1}]"
+
+            # Find the paragraph just before this table in raw_text
+            prev_text = ""
+            for j in range(i - 1, max(i - 5, -1), -1):
+                if raw_lines[j].strip():
+                    prev_text = raw_lines[j].strip()[:60]
+                    break
+
+            if not prev_text:
+                continue
+
+            # Find this paragraph in body_lines (fuzzy match first 40 chars)
+            for k, body_line in enumerate(body_lines):
+                if prev_text[:40].lower() in body_line.lower():
+                    insertions[k] = placeholder
+                    break
+
+    # Build new body with placeholders inserted
+    new_lines = []
+    for k, line in enumerate(body_lines):
+        new_lines.append(line)
+        if k in insertions:
+            new_lines.append("")
+            new_lines.append(insertions[k])
+            new_lines.append("")
+
+    return "\n".join(new_lines)
 class Manuscript(BaseModel):
     title: str = Field(description="The primary title of the manuscript.")
     abstract: str = Field(description="The complete abstract of the manuscript.")
@@ -203,6 +248,11 @@ class ManuscriptParser:
         else:
             result = self._parse_large_document(raw_text)
 
+        if extracted_tables:
+            body_lines = result.get("body", "").split("\n")
+            new_body   = _reinject_table_placeholders(raw_text, body_lines, extracted_tables)
+            result["body"] = new_body
+
         # Merge Python-extracted tables back in
         result["tables"] = extracted_tables
         print(f"TABLES FOUND: {len(extracted_tables)}")
@@ -210,12 +260,19 @@ class ManuscriptParser:
     # ── Chunked processing ─────────────────────────────────────────────────────
 
     def _parse_large_document(self, raw_text):
+
+        import re
+
+    # Strip table placeholders before chunking — tables already extracted by Python.
+    # This prevents large table text from bloating chunks and causing 400 errors.
+        clean_text = re.sub(r'\[TABLE \d+:[^\]]*\]', '', raw_text)
+        clean_text = re.sub(r'\n{3,}', '\n\n', clean_text).strip()
         chunks = []
         start = 0
-        while start < len(raw_text):
-            end = min(start + self.CHUNK_SIZE, len(raw_text))
-            chunks.append(raw_text[start:end])
-            if end == len(raw_text):
+        while start < len(clean_text):
+            end = min(start + self.CHUNK_SIZE, len(clean_text))
+            chunks.append(clean_text[start:end])
+            if end == len(clean_text):
                 break
             start += self.CHUNK_SIZE - self.OVERLAP
 
@@ -232,6 +289,7 @@ class ManuscriptParser:
             is_first = (i == 0)
             is_last  = (i == len(chunks) - 1)
             print(f"Processing chunk {i+1}/{len(chunks)}...")
+            print(f"Chunk sizes: {[len(c) for c in chunks]}")
 
             if i > 0:
                 print("Waiting 20s to respect rate limits...")

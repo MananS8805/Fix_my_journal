@@ -15,6 +15,8 @@ DOCX rendering applies:
 """
 
 import os
+import profile
+from pydoc import doc
 import re
 import subprocess
 import tempfile
@@ -140,11 +142,15 @@ def _style_body(para, profile: Dict, is_first_after_heading: bool = False) -> No
 
     if justify:
         para.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    else:
+        para.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     # First-line indent — skip on first paragraph after heading
     indent = profile.get("first_line_indent", 0)
     if indent and not is_first_after_heading:
         para.paragraph_format.first_line_indent = Inches(indent)
+    else:
+        para.paragraph_format.first_line_indent = Inches(0)
 
 
 def _style_heading(para, level: int, profile: Dict) -> None:
@@ -163,11 +169,16 @@ def _style_heading(para, level: int, profile: Dict) -> None:
     space_after  = style.get("spacing_after",  4)
     alignment    = style.get("alignment", "left")
 
+
+
     for run in para.runs:
         _apply_run_style(run, font_name, font_size, bold, italic, all_caps)
 
+
     _apply_paragraph_spacing(para, space_before_pt=space_before, line_spacing=1.0)
     para.paragraph_format.space_after = Pt(space_after)
+    para.paragraph_format.first_line_indent = Pt(0)
+
 
     if alignment == "center":
         para.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -373,12 +384,14 @@ def _markdown_to_docx_fallback(markdown_text: str,
                                 tables: List[Dict] = None) -> str:
     """
     Convert Markdown manuscript to a styled DOCX using python-docx.
-    Used when the rich 'sections' structure is not available.
-    Now correctly renders **bold** and *italic* inline markers as Word runs.
+    - Title, authors, abstract → single full-width column
+    - Body (Introduction onwards) → journal column layout (1 or 2)
+    - Tables rendered inline at original position via [TABLE X:] placeholders.
+    - Inline **bold** and *italic* preserved as Word runs.
     """
     doc = Document()
 
-    # Page margins
+    # ── Page margins ──────────────────────────────────────────────────────────
     margin = _margin_to_inches(profile.get("margins", "1-inch"))
     for section in doc.sections:
         section.top_margin    = Inches(margin)
@@ -386,48 +399,61 @@ def _markdown_to_docx_fallback(markdown_text: str,
         section.left_margin   = Inches(margin)
         section.right_margin  = Inches(margin)
 
-    # Column layout
-    _set_columns(doc, profile.get("columns", 1))
+    # ── Start single-column (title/abstract section) ──────────────────────────
+    num_columns     = profile.get("columns", 1)
+    in_header       = True   # True until we hit first real body H1
+    columns_applied = False
+    body_start_para_index=None
+    _set_columns(doc, 1)
 
     font_name = profile.get("font", "Times New Roman")
     font_size = profile.get("font_size", 12)
 
-    lines        = markdown_text.split("\n")
-    list_counter = 0
-    in_list      = False
-
+    lines            = markdown_text.split("\n")
+    list_counter     = 0
+    in_list          = False
     last_was_heading = True
 
+    
     for raw_line in lines:
         line = raw_line.rstrip()
 
-        if line.startswith("### ") or line.startswith("## ") or line.startswith("# "):
-            in_list = False; list_counter = 0
-            level = 3 if line.startswith("### ") else 2 if line.startswith("## ") else 1
-            text = line.lstrip("#").strip()
-            para = doc.add_heading(text, level=level)
-            _style_heading(para, level, profile)
-            last_was_heading = True
-
-        # H3
+        # ── H3 ────────────────────────────────────────────────────────────────
         if line.startswith("### "):
             in_list = False; list_counter = 0
-            para = doc.add_heading(line[4:].strip(), level=3)
+            text = re.sub(r':\s*$', '', line[4:].strip())
+            para = doc.add_heading(text, level=3)
             _style_heading(para, 3, profile)
+            last_was_heading = True
 
-        # H2
+        # ── H2 ────────────────────────────────────────────────────────────────
         elif line.startswith("## "):
             in_list = False; list_counter = 0
-            para = doc.add_heading(line[3:].strip(), level=2)
+            text = re.sub(r':\s*$', '', line[3:].strip())
+            para = doc.add_heading(text, level=2)
             _style_heading(para, 2, profile)
+            last_was_heading = True
 
-        # H1
+        # ── H1 ────────────────────────────────────────────────────────────────
         elif line.startswith("# "):
             in_list = False; list_counter = 0
-            para = doc.add_heading(line[2:].strip(), level=1)
-            _style_heading(para, 1, profile)
+            text = re.sub(r':\s*$', '', line[2:].strip())
 
-        # Ordered list
+            # Switch to multi-column on first real body section heading
+            if (in_header
+                    and not columns_applied
+                    and num_columns > 1
+                    and text.upper() not in ("ABSTRACT", "KEYWORDS", "AUTHORS")):
+                print(f"COLUMN SWITCH triggered at heading: '{text}' para_index={len(doc.paragraphs)}")
+                body_start_para_index= len(doc.paragraphs)
+                columns_applied = True
+                in_header       = False
+
+            para = doc.add_heading(text, level=1)
+            _style_heading(para, 1, profile)
+            last_was_heading = True
+
+        # ── Ordered list ──────────────────────────────────────────────────────
         elif re.match(r"^\d+\.\s", line):
             in_list = True
             list_counter += 1
@@ -435,16 +461,18 @@ def _markdown_to_docx_fallback(markdown_text: str,
             para = doc.add_paragraph()
             para.add_run(text)
             _style_list_item(para, profile, is_ordered=True, index=list_counter)
+            last_was_heading = False
 
-        # Unordered list
+        # ── Unordered list ────────────────────────────────────────────────────
         elif line.startswith("- ") or line.startswith("* "):
             in_list = True
             text = line[2:].strip()
             para = doc.add_paragraph()
             para.add_run(text)
             _style_list_item(para, profile, is_ordered=False, index=0)
+            last_was_heading = False
 
-        # Horizontal rule
+        # ── Horizontal rule ───────────────────────────────────────────────────
         elif line.strip() in ("---", "***", "___"):
             in_list = False; list_counter = 0
             para = doc.add_paragraph()
@@ -457,29 +485,224 @@ def _markdown_to_docx_fallback(markdown_text: str,
             bottom.set(qn("w:color"), "auto")
             pBdr.append(bottom)
             pPr.append(pBdr)
+            last_was_heading = False
 
-        # Empty line
+        # ── Empty line ────────────────────────────────────────────────────────
         elif line.strip() == "":
             in_list = False; list_counter = 0
             para = doc.add_paragraph()
             _apply_paragraph_spacing(para, space_before_pt=0, line_spacing=1.0)
+            # Don't reset last_was_heading on blank lines
 
-        # Regular body paragraph — now preserves inline bold/italic
+        # ── Table placeholder — render inline at original position ────────────
+        elif re.match(r'^\[TABLE \d+:', line.strip()):
+            in_list   = False
+            tbl_match = re.match(r'^\[TABLE (\d+):', line.strip())
+            if tbl_match and tables:
+                idx = int(tbl_match.group(1))
+                if idx < len(tables):
+                    doc.add_paragraph()
+                    _add_table(doc, tables[idx], profile)
+                    doc.add_paragraph()
+            last_was_heading = False
+
+        # ── Regular body paragraph ────────────────────────────────────────────
         else:
             in_list = False
-            para = doc.add_paragraph()
+            para    = doc.add_paragraph()
             _inline_runs(para, line, font_name, font_size)
-            _style_body(para, profile)
+            _style_body(para, profile, is_first_after_heading=last_was_heading)
+            last_was_heading = False
 
-    # Render tables at end
-    if tables:
-        for table_data in tables:
-            doc.add_paragraph()
-            _add_table(doc, table_data, profile)
+    
+    # ── Apply 2-column layout to body section ────────────────────────────
+    if num_columns > 1 and body_start_para_index is not None:
+        try:
+            split_para = doc.paragraphs[body_start_para_index - 1] \
+                        if body_start_para_index > 0 \
+                        else doc.paragraphs[0]
+            pPr    = split_para._p.get_or_add_pPr()
+            sectPr = OxmlElement("w:sectPr")
+            type_el = OxmlElement("w:type")
+            type_el.set(qn("w:val"), "continuous")
+            sectPr.append(type_el)
+            cols_el = OxmlElement("w:cols")
+            cols_el.set(qn("w:num"),        str(num_columns))
+            cols_el.set(qn("w:space"),      "720")
+            cols_el.set(qn("w:equalWidth"), "1")
+            sectPr.append(cols_el)
+            pgSz = OxmlElement("w:pgSz")
+            pgSz.set(qn("w:w"), "12240")
+            pgSz.set(qn("w:h"), "15840")
+            sectPr.append(pgSz)
+            pPr.append(sectPr)
+        except Exception as e:
+            print(f"Column break insertion failed: {e}")
 
     doc.save(output_path)
     return output_path
+def _markdown_to_docx_fallback(markdown_text: str,
+                                output_path: str,
+                                profile: Dict,
+                                tables: List[Dict] = None) -> str:
+    """
+    Convert Markdown manuscript to a styled DOCX using python-docx.
+    - Title, authors, abstract → single full-width column
+    - Body (Introduction onwards) → journal column layout (1 or 2)
+    - Tables rendered inline at original position via [TABLE X:] placeholders.
+    - Inline **bold** and *italic* preserved as Word runs.
+    """
+    doc = Document()
 
+    # ── Page margins ──────────────────────────────────────────────────────────
+    margin = _margin_to_inches(profile.get("margins", "1-inch"))
+    for section in doc.sections:
+        section.top_margin    = Inches(margin)
+        section.bottom_margin = Inches(margin)
+        section.left_margin   = Inches(margin)
+        section.right_margin  = Inches(margin)
+
+    # ── Start single-column (title/abstract section) ──────────────────────────
+    num_columns     = profile.get("columns", 1)
+    in_header       = True   # True until we hit first real body H1
+    columns_applied = False
+    body_start_para_index=None
+    _set_columns(doc, 1)
+
+    font_name = profile.get("font", "Times New Roman")
+    font_size = profile.get("font_size", 12)
+
+    lines            = markdown_text.split("\n")
+    list_counter     = 0
+    in_list          = False
+    last_was_heading = True
+
+    
+    for raw_line in lines:
+        line = raw_line.rstrip()
+
+        # ── H3 ────────────────────────────────────────────────────────────────
+        if line.startswith("### "):
+            in_list = False; list_counter = 0
+            text = re.sub(r':\s*$', '', line[4:].strip())
+            para = doc.add_heading(text, level=3)
+            _style_heading(para, 3, profile)
+            last_was_heading = True
+
+        # ── H2 ────────────────────────────────────────────────────────────────
+        elif line.startswith("## "):
+            in_list = False; list_counter = 0
+            text = re.sub(r':\s*$', '', line[3:].strip())
+            para = doc.add_heading(text, level=2)
+            _style_heading(para, 2, profile)
+            last_was_heading = True
+
+        # ── H1 ────────────────────────────────────────────────────────────────
+        elif line.startswith("# "):
+            in_list = False; list_counter = 0
+            text = re.sub(r':\s*$', '', line[2:].strip())
+
+            # Switch to multi-column on first real body section heading
+            if (in_header
+                    and not columns_applied
+                    and num_columns > 1
+                    and text.upper() not in ("ABSTRACT", "KEYWORDS", "AUTHORS")):
+                body_start_para_index= len(doc.paragraphs)
+                columns_applied = True
+                in_header       = False
+
+            para = doc.add_heading(text, level=1)
+            _style_heading(para, 1, profile)
+            last_was_heading = True
+
+        # ── Ordered list ──────────────────────────────────────────────────────
+        elif re.match(r"^\d+\.\s", line):
+            in_list = True
+            list_counter += 1
+            text = re.sub(r"^\d+\.\s+", "", line)
+            para = doc.add_paragraph()
+            para.add_run(text)
+            _style_list_item(para, profile, is_ordered=True, index=list_counter)
+            last_was_heading = False
+
+        # ── Unordered list ────────────────────────────────────────────────────
+        elif line.startswith("- ") or line.startswith("* "):
+            in_list = True
+            text = line[2:].strip()
+            para = doc.add_paragraph()
+            para.add_run(text)
+            _style_list_item(para, profile, is_ordered=False, index=0)
+            last_was_heading = False
+
+        # ── Horizontal rule ───────────────────────────────────────────────────
+        elif line.strip() in ("---", "***", "___"):
+            in_list = False; list_counter = 0
+            para = doc.add_paragraph()
+            pPr  = para._p.get_or_add_pPr()
+            pBdr = OxmlElement("w:pBdr")
+            bottom = OxmlElement("w:bottom")
+            bottom.set(qn("w:val"),   "single")
+            bottom.set(qn("w:sz"),    "4")
+            bottom.set(qn("w:space"), "1")
+            bottom.set(qn("w:color"), "auto")
+            pBdr.append(bottom)
+            pPr.append(pBdr)
+            last_was_heading = False
+
+        # ── Empty line ────────────────────────────────────────────────────────
+        elif line.strip() == "":
+            in_list = False; list_counter = 0
+            para = doc.add_paragraph()
+            _apply_paragraph_spacing(para, space_before_pt=0, line_spacing=1.0)
+            # Don't reset last_was_heading on blank lines
+
+        # ── Table placeholder — render inline at original position ────────────
+        elif re.match(r'^\[TABLE \d+:', line.strip()):
+            in_list   = False
+            tbl_match = re.match(r'^\[TABLE (\d+):', line.strip())
+            if tbl_match and tables:
+                idx = int(tbl_match.group(1))
+                if idx < len(tables):
+                    doc.add_paragraph()
+                    _add_table(doc, tables[idx], profile)
+                    doc.add_paragraph()
+            last_was_heading = False
+
+        # ── Regular body paragraph ────────────────────────────────────────────
+        else:
+            in_list = False
+            para    = doc.add_paragraph()
+            _inline_runs(para, line, font_name, font_size)
+            _style_body(para, profile, is_first_after_heading=last_was_heading)
+            last_was_heading = False
+
+    
+    # ── Apply 2-column layout to body section ────────────────────────────
+    if num_columns > 1 and body_start_para_index is not None:
+        try:
+            split_para = doc.paragraphs[body_start_para_index - 1] \
+                        if body_start_para_index > 0 \
+                        else doc.paragraphs[0]
+            pPr    = split_para._p.get_or_add_pPr()
+            sectPr = OxmlElement("w:sectPr")
+            type_el = OxmlElement("w:type")
+            type_el.set(qn("w:val"), "continuous")
+            sectPr.append(type_el)
+            cols_el = OxmlElement("w:cols")
+            cols_el.set(qn("w:num"),        str(num_columns))
+            cols_el.set(qn("w:space"),      "720")
+            cols_el.set(qn("w:equalWidth"), "1")
+            sectPr.append(cols_el)
+            pgSz = OxmlElement("w:pgSz")
+            pgSz.set(qn("w:w"), "12240")
+            pgSz.set(qn("w:h"), "15840")
+            sectPr.append(pgSz)
+            pPr.append(sectPr)
+        except Exception as e:
+            print(f"Column break insertion failed: {e}")
+
+    doc.save(output_path)
+    return output_path
 
 # ── Pandoc path ───────────────────────────────────────────────────────────────
 
